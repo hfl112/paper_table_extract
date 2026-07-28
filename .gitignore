@@ -1,0 +1,27 @@
+# ═══ 版权：不提交任何来自已发表文献的内容 ═══
+#
+# `0.pdf_input/` 是 12 篇真实文献的 PDF，`spike/lowres/` 与 `spike/out_images/` 是
+# 从这些文献里抠出来的图，`1.output/` 与 `holdout/<篇名>/` 是抽取产物（含表格原文）。
+# 这些**都不该进公开仓库**。测试料的预期行为记在 `0.pdf_input/pdf_for_testing.txt`，
+# 那份是我们自己写的，保留。
+0.pdf_input/*.pdf
+spike/lowres/
+spike/out_images/
+1.output/
+holdout/*/
+
+# ═══ 本地产物与缓存 ═══
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.DS_Store
+eval/_baseline/
+eval/.llm_batch.json
+eval/llm_disagreements.md
+
+# ═══ 本地配置（含机器相关路径与 gold 目录的 deny 规则）═══
+.claude/settings.local.json
+.env
+.claude/scheduled_tasks.lock
+.claude/*.lock

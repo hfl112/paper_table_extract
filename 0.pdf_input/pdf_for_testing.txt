@@ -1,0 +1,11 @@
+pbc28772,pbc_29304:大表格跨页。pbc_29304表格是横向。
+pbc24724:文字表格中无PD,CR，但是图片里面有。
+pbc21078:文字表格是横向的。和pbc24724一样，文字表格中无PD,CR，但是图片里面有。
+1078-0432.CCR-18-2728：正文没有reponse点完整表格，但是suppfigure有，看看我们的过滤，能不能抓到suppfigre，然后提示我。
+blood_2014_12_518900:有点复杂点实验设计
+566455: negative control，应该在早期就提示我是peer review版本
+pbc_26870: 不是peer review，但是表和图与正文分离
+pbc_30017: 不是peer review，但是表和图与正文分离
+pbc_21296:有一个图片高糊
+EAP in advanced gastric cancer:扫描版？
+rstl.1665.0039:扫描版

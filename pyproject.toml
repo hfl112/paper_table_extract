@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-table-extract"
+version = "0.1.0"
+description = "给一篇英文文献 PDF 和一组关键词，把命中的表格（含图片形式的表格）导出成 CSV"
+requires-python = ">=3.11"
+
+# 版本下限取开发环境 gemini 里实测可用的版本（见 AGENTS.md「开发环境」）。
+# 注意：paddlex[ocr] 是 PPStructureV3 的必需依赖 —— 只 import 成功不代表能用，
+# 缺它时 predict() 会抛 DependencyError。
+dependencies = [
+    "pymupdf>=1.27",
+    "pdfplumber>=0.11",
+    "docling>=2.110",
+    "paddleocr>=3.7",
+    "paddlepaddle>=3.3",
+    "paddlex[ocr]",
+    "pandas>=2.0",
+    "pillow",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+pdf-table-extract = "pdf_table_extract.__main__:main"
+
+[tool.setuptools]
+packages = ["pdf_table_extract"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
