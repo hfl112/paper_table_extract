@@ -723,10 +723,181 @@ def _pdf_words(pdf: Path) -> set[str]:
     return set(_WORDISH.findall(txt.lower()))
 
 
+# ═══════════════ 候选 A2：用 pdfplumber 的行切分修正 docling ═══════════════
+#
+# 动机：坐标拆分（A）的两个 bug 都是**行号记账**问题（`export_to_dataframe` 重塑表
+# 导致 `rows[r]` 与 cells 的 `r0` 对不上、多级表头没排干净）。
+# 而 plumber **本来就把行切对了** —— 第 2 步实测 `pbc_21296` p4 上它给出
+# `ALL-8` 与 `ALL-16` 两行，且**两行的 `>EP` 都在**（坐标拆分丢了后一个）。
+#
+# 设计：**外科手术式**，不做引擎融合。
+#   ① 仍用 A 的检测器（cell 高度 + 行高均匀闸门）定位可疑行 —— 这一半已验证 0 误报
+#   ② 只对那一行，去 plumber 的网格里找对应的若干行
+#   ③ **自校验**：plumber 那几行拼起来的字符，必须与 docling 那个合并行一致；
+#      不一致就弃权。这道校验是安全网 —— 它同时挡住"行找错了"和"plumber 自己抽错了"
+#
+# 为什么这不算踩铁律 #1：我们不是"无条件信任另一个引擎的网格"，
+# 而是**已经有独立证据（cell 高 1.85×）证明 docling 在这一行错了**，
+# 且替换后还要过字符一致性校验。范围限定在**一行**，不是整表。
+
+def _plumber_grid(pdf: Path, page: int, rect: Rect, docling_header: list[str]):
+    from pdf_table_extract import engine_plumber
+    with geom.normalized_pdf(pdf) as (npdf, _i):
+        raw = engine_plumber.extract_in_bbox(npdf, page, rect)
+    ne = [r for r in raw if any(c.strip() for c in r)]
+    return ne
+
+
+def _norm_chars(s: str) -> str:
+    return re.sub(r"[^0-9a-zA-Z<>.%/+-]", "", s).lower()
+
+
+def cand_a2(corpus: str = "dev") -> int:
+    print("=" * 104)
+    print("候选 A2（%s）：可疑行改用 pdfplumber 的行切分（外科手术式 + 字符自校验）" % corpus)
+    print("=" * 104)
+    import time
+    if corpus == "dev":
+        CASES = [(DEV / f"{s}.pdf", p) for s, p in
+                 [("pbc_21296", 4), ("pbc_28772", 3), ("pbc_26870", 18), ("pbc_21078", 4),
+                  ("pbc_21078", 6), ("pbc_21078", 8), ("pbc_24724", 4), ("pbc_30017", 7)]]
+        dumper = lambda pdf: docling_dump(pdf.stem)
+    else:
+        base = CORPUS3_PDFS if corpus == "corpus3" else HOLDOUT_PDFS
+        cache = CORPUS3_CACHE if corpus == "corpus3" else HOLDOUT_CACHE
+        CASES = [(pdf, None) for pdf in sorted(base.glob("*.pdf"))]
+        dumper = lambda pdf: holdout_dump(pdf, cache)
+    t0 = time.time()
+    n_flag = n_ok = n_reject = 0
+    for pdf, page in CASES:
+        stem = pdf.stem
+        try:
+            dump = dumper(pdf)
+        except Exception:
+            continue
+        for t in dump:
+            if not t.get("rows"):
+                continue
+            if page is not None and t["page"] != page:
+                continue
+            page_ = t["page"]
+            sus = tall_rows(t["cells"])
+            if not sus:
+                continue
+            pl = _plumber_grid(pdf, page_, Rect(*t["rect"]), t["rows"][0])
+            for r in sorted(sus):
+                n_flag += 1
+                merged = t["rows"][r] if r < len(t["rows"]) else []
+                # **必须逐列比，不能整串比。**
+                # docling 是**按列**拼的（`ALL-8 ALL-16` 在同一格），plumber 是**按行**排的，
+                # 整串拼起来字符顺序不同，必然不等 —— 第一版就栽在这。
+                ncol = len(merged)
+                want_cols = [_norm_chars(c) for c in merged]
+                hit = None
+                for i in range(len(pl)):
+                    for k in (2, 3):
+                        grp = pl[i:i + k]
+                        if len(grp) < k or any(len(x) != ncol for x in grp):
+                            continue
+                        got_cols = [_norm_chars("".join(x[j] for x in grp)) for j in range(ncol)]
+                        if got_cols == want_cols:
+                            hit = grp
+                            break
+                    if hit:
+                        break
+                print("\n  %s p%d 行%d  docling 合并格:" % (stem[:34], page_, r))
+                print("      %s" % [c[:16] for c in merged[:6]])
+                if hit:
+                    n_ok += 1
+                    print("      ✓ **字符自校验通过** —— plumber 给出 %d 行：" % len(hit))
+                    for h in hit:
+                        print("        %s" % [c[:16] for c in h[:6]])
+                else:
+                    n_reject += 1
+                    print("      ✗ 找不到字符一致的 plumber 行组 → **弃权**（不改）")
+    print("\n" + "-" * 104)
+    print("检测到可疑行 %d 处；自校验通过 %d 处、弃权 %d 处；耗时 %.1f 秒"
+          % (n_flag, n_ok, n_reject, time.time() - t0))
+    return 0
+
+
+# ═══════════ 候选 C2：逐「行」OCR（不是逐格）+ 第二意见 ═══════════
+#
+# 逐格失败的根因已查清：数据格 22px 高 x 132px 宽，**两个方向都小** ——
+# 不加 padding 检测器看不见（6/6 空），加了必然吃进上下邻格。两条路互斥。
+#
+# **一整行是 22px x ~900px** —— 这是**单行文本**的形状，正是 OCR 检测器设计来处理的，
+# 而且 `plain_text` 走的配置是 `limit_side_len: 64 / min`（**不缩图**），不撞 960 硬顶。
+#
+# 切列不靠再裁一次，而是**用识别结果自带的词框 x 坐标**去落到列带上 ——
+# 让 OCR 只管认字、几何只管定位，各干各擅长的。
+
+def cand_c2() -> int:
+    import time
+    from PIL import Image
+    import numpy as np
+    from rapidocr import RapidOCR
+    print("=" * 104)
+    print("候选 C2：逐行 OCR + 用词框 x 坐标切列")
+    print("=" * 104)
+    eng = RapidOCR()
+    for name, img in IMGS.items():
+        if not img.exists():
+            continue
+        gold_name = GOLD_FOR[name]
+        print("\n══ %s   %s" % (name, img.name))
+        t0 = time.time()
+        boxes = _cell_boxes(img, "RT-DETR-L_wired_table_cell_det")
+        t_det = time.time() - t0
+        if not boxes:
+            print("   单元格检测 0 个"); continue
+        hs = [b[3] - b[1] for b in boxes]
+        ws = [b[2] - b[0] for b in boxes]
+        ytol = statistics.median(hs) * 0.5
+        xtol = statistics.median(ws) * 0.5
+        rows_c = _bands([(b[1] + b[3]) / 2 for b in boxes], ytol)
+        cols_c = _bands([(b[0] + b[2]) / 2 for b in boxes], xtol)
+        x0 = min(b[0] for b in boxes); x1 = max(b[2] for b in boxes)
+        rowh = statistics.median(hs)
+        im = Image.open(img).convert("RGB")
+        UP = 2
+        t1 = time.time()
+        grid = []
+        for cy in rows_c:
+            top = max(0, cy - rowh * 0.6); bot = min(im.height, cy + rowh * 0.6)
+            crop = im.crop((max(0, x0 - 4), top, min(im.width, x1 + 4), bot))
+            crop = crop.resize((crop.width * UP, crop.height * UP), Image.LANCZOS)
+            row = ["" for _ in cols_c]
+            try:
+                r = eng(np.array(crop))
+            except Exception:
+                r = None
+            if r and r.txts:
+                for txt, box in zip(r.txts, r.boxes):
+                    bx = (min(pt[0] for pt in box) + max(pt[0] for pt in box)) / 2
+                    absx = x0 - 4 + bx / UP           # 还原到原图坐标
+                    ci = min(range(len(cols_c)), key=lambda i: abs(cols_c[i] - absx))
+                    row[ci] = (row[ci] + " " + txt).strip() if row[ci] else txt
+            grid.append(row)
+        t_ocr = time.time() - t1
+        shape = "%dx%d" % (len(grid), len(cols_c))
+        print("   检测 %d 格 → %d 行带 x %d 列带；耗时 检测 %.1fs + 逐行OCR %.1fs = **%.1fs**"
+              % (len(boxes), len(rows_c), len(cols_c), t_det, t_ocr, t_det + t_ocr))
+        print("   还原 %-8s 响应码重叠 %s" % (shape, _score_codes(gold_name, grid)))
+        print("   表头: %s" % [c[:22] for c in grid[0][:6]])
+        ne = [r for r in grid if any(c.strip() for c in r)]
+        print("   非空行 %d/%d" % (len(ne), len(grid)))
+        for r in grid[1:4]:
+            print("     数据: %s" % [c[:14] for c in r[:6]])
+    print("-" * 104)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--only", choices=("A", "B", "C", "holdout", "corpus3"), required=True)
+    ap.add_argument("--only", choices=("A", "A2", "B", "C", "C2", "holdout", "corpus3"), required=True)
+    ap.add_argument("--corpus", default="dev", choices=("dev", "holdout", "corpus3"))
     args = ap.parse_args()
     if args.only == "holdout":
         return cand_holdout()
@@ -734,8 +905,12 @@ def main() -> int:
         return cand_holdout(CORPUS3_PDFS, CORPUS3_CACHE, "阈值验证集(53篇)")
     if args.only == "A":
         return cand_a()
+    if args.only == "A2":
+        return cand_a2(args.corpus)
     if args.only == "B":
         return cand_b()
+    if args.only == "C2":
+        return cand_c2()
     return cand_c()
 
 

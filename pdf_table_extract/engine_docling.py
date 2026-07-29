@@ -11,19 +11,23 @@ find_tables）在同一批料上失效（见 AGENTS.md PDF 事实 #5），故不
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import quiet, rules
-from .models import Rect
+from .models import Rect, TableCellBox
 
 
 @dataclass
 class DoclingTable:
     page: int  # 1-based
     rect: Rect  # top-left 原点，与 pdfio.Rect 一致
-    rows: list[list[str]]  # 含表头行
+    rows: list[list[str]]  # 含表头行，来自 export_to_dataframe
     caption: str  # docling 自己关联的 caption，**经常为空**（PDF 事实 #13）
+    # `table_cells` 的几何 + 索引。**与 `rows` 是同一张表的两套视图，行号不通用** ——
+    # 实测 184/427 张表两者行数不一致（多级表头被 dataframe 拼平成一行）。
+    # 只给压行检测用（rows 里没有格子高度）。见 `rules.detect_merged_rows`。
+    cells: list[TableCellBox] = field(default_factory=list)
 
 
 @dataclass
@@ -95,12 +99,28 @@ def convert(pdf_path: str | Path) -> DoclingResult:
             rows = _df_to_rows(ti.export_to_dataframe(doc))
         except Exception:
             rows = []
+        cells = [
+            TableCellBox(
+                text=c.text or "",
+                r0=c.start_row_offset_idx,
+                c0=c.start_col_offset_idx,
+                row_span=c.row_span,
+                col_span=c.col_span,
+                # docling 自己的表头判定。**不要自己猜表头有几行** ——
+                # 实测表头占 1/2/3 行的都有（`Ng 2017` 与 `Nowell 1976` 是 3 行），
+                # 写死任何一个数都会：3 行表头的照旧误报，1 行表头的把真数据行跳掉。
+                column_header=bool(getattr(c, "column_header", False)),
+                bbox=_to_topleft(c.bbox, ph) if c.bbox else None,
+            )
+            for c in (ti.data.table_cells or [])
+        ]
         tables.append(
             DoclingTable(
                 page=prov.page_no,
                 rect=_to_topleft(prov.bbox, ph),
                 rows=rows,
                 caption=re.sub(r"\s+", " ", ti.caption_text(doc) or "").strip(),
+                cells=cells,
             )
         )
 

@@ -559,6 +559,13 @@ def decide_confidence(table: ExtractedTable, *, ocr_page: bool) -> str:
         return "medium"
     if abs(table.plumber_cols - table.n_cols) > 1:
         return "medium"
+    # 压行告警 ⇒ 降到 medium（铁律 #5「降级要可见」）。
+    # `high` 的定义是"两个独立引擎的行列数一致 + caption 归属校验通过"，
+    # 而"疑似有两个数据行挤在一格"本身就意味着行数可能是错的 —— 不该给 high。
+    # 检测精度约 90%（见 detect_merged_rows 处的 90 篇实测），
+    # 所以约 10% 的情况会被误降级；代价是多看一眼，反向的代价是错行被当成 high 采用。
+    if any(n.startswith(MERGED_ROW_NOTE) for n in table.notes):
+        return "medium"
     return "high"
 
 
@@ -903,3 +910,180 @@ def match_table(
     if cap_hits and body_hits and set(cap_hits) != set(body_hits):
         return union, "caption+cell"
     return union, ("caption" if cap_hits else "cell")
+
+
+# ---------------------------------------------------------------------------
+# 压行检测（F-001）—— docling 把两个数据行挤进同一格
+# ---------------------------------------------------------------------------
+#
+# 症状：`pbc_21296 p04_table_i` 该有 44 个数据行，抽出 43 个 ——
+# 第 41 行是 `ALL-8 ALL-16` / `ALL T-cell ALL T-cell` / `> EP > EP` 挤在一格里。
+# **字符一个没丢，只是位置错了**，所以内容覆盖率毫无异常，最终还标成 high。
+#
+# ═══ 只检测、不拆分（用户 2026-07-28 拍板）═══
+#
+# 自动拆分实测会**静默丢字符**：`56` 拆成 `6` + 空、`> EP > EP` 拆成 `>EP` + 空。
+# 丢掉之后 CSV 里看不出任何异常 —— 正是铁律 #1 要防的那种"网格被信任高于原文"。
+# 所以这里只出**告警**（notes + 置信度降级），把该看哪一行、原内容是什么讲清楚。
+#
+# ═══ 三层判据，缺一层精度就崩 ═══
+#
+# 1. 高度信号：某格高于同列中位数 CELL_TALL 倍
+# 2. 适用范围闸门：该列自身高度够整齐才算证据（HEIGHT_EVEN_MAX）
+# 3. 表头排除：用 docling 的 `column_header`，**不要自己猜表头有几行**
+# 4. 拆分确认：格内词按 y 聚带，> WRAP_MAX_COLS 列有多带才算压行
+#
+# ═══ 90 篇实测精度（开发集 12 + 留出集 25 + 阈值验证集 53）═══
+#
+#   只用 1+2（表头只排第 0 行）   23 处，人核约 12% 正确  ← 原始版本
+#   加第 3 层 column_header       14 处，人核 **9 真 / 4 误 / 1 存疑 ≈ 64%**
+#   再加第 4 层拆分确认           10 处，人核 **9 真 / 1 误 ≈ 90%**
+#
+# 剩下那 4 个误报**全是同一个机制：长标签折行**（`Image size (pixels)`、
+# `Pen Digits (1797x64)`、`|Corr (BMI)| ↓`），其中 3 个被第 4 层挡掉。
+# 挡不住的 1 个是 `de_Bruijne p603`：三列都以「值 + 括号补充」的方式折行，
+# 与真压行在几何上无法区分。
+# **误报是集中的**：4 个里 3 个来自同一篇会议论文集（`de_Bruijne`，上千页）。
+
+MERGED_ROW_NOTE = "merged_row?="   # notes 前缀，decide_confidence 靠它降级
+CELL_TALL = 1.5          # 格高 / 同列中位数 的告警线
+WRAP_MAX_COLS = 2        # 折行续段最多占这么多列；超过才算压行
+MIN_COL_SAMPLES = 6      # 同列样本少于这么多，中位数不可信 → 放弃该列
+MIN_EVEN_SAMPLES = 4     # 判不出整齐度就放弃该列（保守：不报）
+BAND_GAP = 3.0           # 格内按 y 聚带的间隔阈值（pt）
+
+# 适用范围闸门。「比同列中位数高 1.5 倍」这个信号的**前提**是同列其它格子高度整齐；
+# 前提不成立时（综述表每格都是长句、行高天然参差）这个信号毫无意义。
+# 实测：该报的 极差/中位 = 6.5%~7.1%；不该报的最小 13.9%、每行取最大后 114.8%。
+# 30% 取两侧几何中心（sqrt(7.1 x 114.8) = 28.6%），不偏向任何一侧，余量 16 倍。
+# ⚠ **这个阈值是在留出集上量出来的**，留出集对它不再是独立证据。
+HEIGHT_EVEN_MAX = 0.30
+
+
+def _median(xs: list[float]) -> float:
+    s = sorted(xs)
+    n = len(s)
+    if not n:
+        return 0.0
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+
+def _column_evenness(heights: list[tuple[int, float]], skip_row: int) -> float | None:
+    """该列（排除可疑行与表头行后）的 极差/中位。None = 样本不足、判不出。"""
+    hs = [h for r, h in heights if r != skip_row]
+    if len(hs) < MIN_EVEN_SAMPLES:
+        return None
+    med = _median(hs)
+    if med <= 0:
+        return None
+    return (max(hs) - min(hs)) / med
+
+
+def suspicious_tall_rows(cells) -> dict[int, list[int]]:
+    """第 1~3 层：返回 {格子行号: [证据列号]}，只保留 >=2 个证据列的行。
+
+    `cells` 是 `models.TableCellBox` 的列表（来自 `DoclingTable.cells`）。
+    """
+    header_rows = {c.r0 for c in cells if c.column_header}
+    by_col: dict[int, list[tuple[int, float]]] = {}
+    for c in cells:
+        if c.bbox is None or c.row_span != 1 or c.r0 in header_rows:
+            continue
+        h = abs(c.bbox.y1 - c.bbox.y0)
+        if h > 0:
+            by_col.setdefault(c.c0, []).append((c.r0, h))
+
+    sus: dict[int, list[int]] = {}
+    for col, heights in by_col.items():
+        if len(heights) < MIN_COL_SAMPLES:
+            continue
+        med = _median([h for _, h in heights])
+        if med <= 0:
+            continue
+        for r0, h in heights:
+            if h <= CELL_TALL * med:
+                continue
+            ev = _column_evenness(heights, r0)
+            if ev is None or ev > HEIGHT_EVEN_MAX:
+                continue      # 该列本身不整齐 → 这个"偏高"没有意义
+            sus.setdefault(r0, []).append(col)
+    return {r: cols for r, cols in sus.items() if len(cols) >= 2}
+
+
+def _bands_by_y(words, gap: float = BAND_GAP) -> list[list]:
+    """按词中心的 y 聚带。相邻中心差 > gap 就切一带。"""
+    if not words:
+        return []
+    ordered = sorted(words, key=lambda w: w.cy)
+    out: list[list] = [[ordered[0]]]
+    prev = ordered[0].cy
+    for w in ordered[1:]:
+        if w.cy - prev > gap:
+            out.append([])
+        out[-1].append(w)
+        prev = w.cy
+    return out
+
+
+def confirm_merged_row(cells, row_idx: int, words) -> int:
+    """第 4 层：返回该行「有多个 y 带」的列数。> WRAP_MAX_COLS 才算压行。
+
+    折行 vs 压行的区别是**几列受影响**（实测差一个数量级）：
+      折行续段（长标签换行）只有 1~2 列有多带
+      真压行会有 3 列以上（`pbc_21296` 那行 10 列里 6 列超标）
+    """
+    n = 0
+    for c in cells:
+        if c.r0 != row_idx or c.bbox is None:
+            continue
+        inside = [w for w in words
+                  if c.bbox.x0 - 1 <= w.cx <= c.bbox.x1 + 1
+                  and c.bbox.y0 - 1 <= w.cy <= c.bbox.y1 + 1]
+        if len(_bands_by_y(inside)) >= 2:
+            n += 1
+    return n
+
+
+def match_cell_row_to_output_row(cells, row_idx: int, rows: list[list[str]]) -> int | None:
+    """把「格子行号」翻译成「输出网格（rows）的行号」。**按内容配对，不按行号。**
+
+    ═══ 为什么不能直接用行号（实测，这是 A 一直修不对的根因）═══
+
+    `rows` 来自 `export_to_dataframe()`，`cells` 来自 `table_cells` ——
+    同一张表的两套视图。实测 **184/427 张表两者行数不一致**
+    （多级表头被 dataframe 拼平成一行，偏移量 = 表头行数 - 1，而表头 1/2/3 行都有）。
+    按行号找的后果：在格子的第 41 行发现问题，去 `rows[41]` 报告，
+    实际指的是第 40 行 —— 报到了无辜的一行上。
+
+    按文字重叠配对实测 6/6 命中、**重叠率全部 100%**（8/8、7/7、6/6、7/7、8/8、7/7），
+    与次优拉开明显差距，所以不需要阈值。
+    """
+    want = {"".join(c.text.split()).lower()
+            for c in cells if c.r0 == row_idx and c.text.strip()}
+    if not want:
+        return None
+    best_i, best_ov = None, 0
+    for i, row in enumerate(rows):
+        have = {"".join(v.split()).lower() for v in row if v.strip()}
+        ov = len(want & have)
+        if ov > best_ov:
+            best_i, best_ov = i, ov
+    return best_i if best_ov else None
+
+
+def detect_merged_rows(cells, rows: list[list[str]], words) -> list[tuple[int, list[str]]]:
+    """四层判据串起来。返回 [(输出网格的行号, 该行的格子原文)]。
+
+    **只报告，不修改 `rows`** —— 见本节开头「只检测、不拆分」。
+    """
+    out: list[tuple[int, list[str]]] = []
+    for row_idx in sorted(suspicious_tall_rows(cells)):
+        if confirm_merged_row(cells, row_idx, words) <= WRAP_MAX_COLS:
+            continue   # 折行，不是压行
+        i = match_cell_row_to_output_row(cells, row_idx, rows)
+        if i is None:
+            continue
+        texts = [c.text.strip() for c in sorted(cells, key=lambda c: c.c0)
+                 if c.r0 == row_idx and c.text.strip()]
+        out.append((i, texts))
+    return out

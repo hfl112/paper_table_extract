@@ -1,0 +1,30 @@
+gold,tier,scored,match,missing,extra,rows_full,rows_total
+# gold 打分的基线快照，由 eval/regression.sh 对账。表头必须是第一行（同 expected.csv 约定），
+# 注释一律放表头之后、以 # 开头。
+#
+# 断言的是「逐格准确性没退步」，不是「准确性正确」—— 与 expected.csv 同一个哲学。
+# 里面钉着已知错误的当前值，这样断言器才能全绿、才起得到防改坏的作用。
+# 修好之后逐条确认再改这里，并在 log.md 记下原因。
+#
+# 它和 expected.csv 不重复：expected.csv 断言形状（行列数、有没有出表），这份断言内容。
+# pbc_21296 p04_table_i 曾经形状全绿、同时漏掉 2 个数据行。
+#
+# tier: fast = 快档就有产物（文字表）；full = 需要 OCR（图片表），只在全量档对账
+# 判定：match / rows_full 变小，或 missing / extra 变大 ⇒ 变差 ⇒ exit 1；反向 ⇒ ▲ 提示更新基线
+# rows_total 变了单独报 ✗ —— 那是 gold 标注量改了，此时 rows_full 的比较没有意义
+#
+# rows_full 是「整行全对」：该行的全部 check_cols 同时正确，**漏行算错**。
+# 它才是目标(b)要的数 —— 逐格命中率会掩盖漏行：
+#   pbc_21296 p03_fig_1 逐格 80%，整行只有 4/44 = 9%
+#   pbc_21296 p04_table_i 逐格 100%，整行 42/44（差的 2 行就是候选 A 那个压行）
+#
+# 各条目当前状态的来由：
+#   pbc_21296__p04_table_i  missing=2   ← 候选 A（压行未拆），log.md §30/§37
+#   pbc_28772__p03_table_1  match=43/44 ← 1 处 Obj. Response 读错；漏行已由 B 修好（§37.1）
+#   pbc_21296__p03_fig_1    120dpi 图片表、8.0 px/行，基本不可用（F-018）
+#   pbc_24724__p05_fig_1    match=0     ← 首列词首字符被吃、锚点全失效（F-018）
+pbc_21296__p04_table_i,fast,84,84,2,1,42,44
+pbc_26870__p18_table_1,fast,41,41,0,0,41,41
+pbc_28772__p03_table_1,fast,44,43,0,0,43,44
+pbc_21296__p03_fig_1,full,5,4,39,38,4,44
+pbc_24724__p05_fig_1,full,0,0,41,29,0,41

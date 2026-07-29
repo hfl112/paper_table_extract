@@ -8,7 +8,7 @@ full,table,resp_21078,p08_table_iii.csv,36,cell,high
 full,table,resp_21078,p10_fig_3.csv,33,caption,low
 full,table,resp_21078,p11_fig_4.csv,37,image_text,low
 full,table,resp_21296,p03_fig_1.csv,45,caption,low
-full,table,resp_21296,p04_table_i.csv,44,cell,high
+full,table,resp_21296,p04_table_i.csv,44,cell,medium
 full,table,resp_24724,p04_table_ii.csv,42,cell,high
 full,table,resp_24724,p05_fig_1.csv,47,caption,low
 full,table,resp_28772,p03_table_1.csv,45,cell,high
@@ -26,3 +26,4 @@ fast,no_tables,demo_24724,,,,
 fast,no_tables,neg_nomatch,,,,
 fast,exit_code,neg_preprint,,3,,
 fast,exit_code,neg_scanned,,4,,
+fast,table,gold_21296,p04_table_i.csv,44,cell,medium

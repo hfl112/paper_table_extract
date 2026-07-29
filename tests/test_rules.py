@@ -9,11 +9,17 @@
 from __future__ import annotations
 
 from pdf_table_extract import rules
+from pdf_table_extract.models import Word as _WordModel
+
+
+def _W(x0, y0, x1, y1, text):
+    return _WordModel(x0, y0, x1, y1, text)
 from pdf_table_extract.models import (
     ExtractedTable,
     ImageInfo,
     Rect,
     TableCandidate,
+    TableCellBox,
 )
 
 # ---------------------------------------------------------------------------
@@ -812,3 +818,108 @@ class TestRejoinHyphenBreaks:
         rows = [["PR-104"], ["NB-SD"], ["ALL-11"], ["KT-13"], ["PD-L1"]]
         out, n = rules.rejoin_hyphen_breaks(rows, {})
         assert n == 0 and out == rows
+
+
+# ---------------------------------------------------------------------------
+# 压行检测（F-001）—— 四层判据各自独立可测
+# ---------------------------------------------------------------------------
+
+
+def _cell(text, r0, c0, y0, y1, *, hdr=False, rspan=1, x0=0.0, x1=50.0):
+    return TableCellBox(text=text, r0=r0, c0=c0, row_span=rspan, col_span=1,
+                        column_header=hdr, bbox=Rect(x0, y0, x1, y1))
+
+
+def _even_col(c0, n=8, h=10.0, tall_row=None, tall_h=25.0):
+    """造一列高度整齐的格子；`tall_row` 那一行给 tall_h。"""
+    out = []
+    y = 0.0
+    for r in range(1, n + 1):
+        hh = tall_h if r == tall_row else h
+        out.append(_cell(f"v{r}", r, c0, y, y + hh))
+        y += hh
+    return out
+
+
+class TestSuspiciousTallRows:
+    def test_two_tall_columns_in_even_table_is_flagged(self):
+        cells = _even_col(0, tall_row=4) + _even_col(1, tall_row=4)
+        assert 4 in rules.suspicious_tall_rows(cells)
+
+    def test_one_tall_column_is_not_enough(self):
+        """只有一列偏高 = 长标签折行，不是压行。这是 4 个已知误报的机制。"""
+        cells = _even_col(0, tall_row=4) + _even_col(1)
+        assert rules.suspicious_tall_rows(cells) == {}
+
+    def test_uneven_column_is_not_evidence(self):
+        """行高天然参差的列（综述表每格都是长句）里，'偏高'这个信号没有意义。
+
+        不加这道闸门时留出集 27 张表命中 28 次、拆分 14 次**全错**。
+        """
+        cells = []
+        for c0 in (0, 1):
+            y = 0.0
+            for r, hh in enumerate([10, 40, 12, 60, 11, 55, 13, 90], start=1):
+                cells.append(_cell(f"v{r}", r, c0, y, y + hh))
+                y += hh
+        assert rules.suspicious_tall_rows(cells) == {}
+
+    def test_header_rows_excluded_by_docling_flag(self):
+        """多级表头的第 2/3 行会被 docling 拼平、行高偏高 —— 必须靠 column_header 排除。
+
+        实测 90 篇里 9 处误报全是这个，且表头占 1/2/3 行的都有
+        （`Ng 2017` / `Nowell 1976` 是 3 行）—— 所以不能写死跳过前 N 行。
+        """
+        cells = _even_col(0, tall_row=2) + _even_col(1, tall_row=2)
+        assert 2 in rules.suspicious_tall_rows(cells), "先确认不加表头标记时会命中"
+        flagged = [_cell(c.text, c.r0, c.c0, c.bbox.y0, c.bbox.y1, hdr=(c.r0 <= 2))
+                   for c in cells]
+        assert rules.suspicious_tall_rows(flagged) == {}
+
+    def test_row_span_cells_ignored(self):
+        """纵跨多行的格子当然更高，那是合法合并单元格（PDF 事实 #15），不是压行。"""
+        cells = _even_col(0) + _even_col(1)
+        cells += [_cell("span", 4, 2, 0.0, 90.0, rspan=3),
+                  _cell("span", 4, 3, 0.0, 90.0, rspan=3)]
+        assert rules.suspicious_tall_rows(cells) == {}
+
+    def test_too_few_samples_gives_up(self):
+        """同列样本太少 ⇒ 中位数不可信 ⇒ 放弃（保守：不报）。"""
+        cells = _even_col(0, n=3, tall_row=2) + _even_col(1, n=3, tall_row=2)
+        assert rules.suspicious_tall_rows(cells) == {}
+
+
+class TestConfirmMergedRow:
+    def test_wrapped_label_only_one_column_has_two_bands(self):
+        """长标签折行：只有标签列有两带 ⇒ 不算压行。"""
+        cells = [_cell("Image size (pixels)", 3, 0, 0, 24, x0=0, x1=50),
+                 _cell("2455", 3, 1, 0, 24, x0=60, x1=100)]
+        words = [_W(5, 2, 40, 10, "Image"), _W(5, 14, 40, 22, "size"),
+                 _W(65, 6, 95, 16, "2455")]
+        assert rules.confirm_merged_row(cells, 3, words) == 1
+
+    def test_real_merged_row_has_many_columns_with_two_bands(self):
+        cells = [_cell("ALL-8 ALL-16", 3, 0, 0, 24, x0=0, x1=50),
+                 _cell("a b", 3, 1, 0, 24, x0=60, x1=100),
+                 _cell("c d", 3, 2, 0, 24, x0=110, x1=150)]
+        words = []
+        for x0, x1 in ((5, 40), (65, 95), (115, 145)):
+            words += [_W(x0, 2, x1, 10, "u"), _W(x0, 14, x1, 22, "v")]
+        assert rules.confirm_merged_row(cells, 3, words) == 3
+
+
+class TestMatchCellRowToOutputRow:
+    def test_matches_by_content_not_index(self):
+        """两套视图行号差 1（多级表头被 dataframe 拼平）—— 必须按内容配对。
+
+        实测 184/427 张表两者行数不一致；按行号找会报到无辜的一行上。
+        """
+        cells = [_cell("ALL-8 ALL-16", 41, 0, 0, 24), _cell("> EP > EP", 41, 1, 0, 24)]
+        rows = [["h1", "h2"]] + [[f"x{i}", f"y{i}"] for i in range(1, 40)] \
+            + [["ALL-8 ALL-16", "> EP > EP"]]
+        i = rules.match_cell_row_to_output_row(cells, 41, rows)
+        assert i == 40, f"内容在第 40 行，不是格子的行号 41；实际 {i}"
+
+    def test_no_overlap_returns_none(self):
+        cells = [_cell("zzz", 5, 0, 0, 24)]
+        assert rules.match_cell_row_to_output_row(cells, 5, [["a"], ["b"]]) is None

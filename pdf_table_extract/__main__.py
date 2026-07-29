@@ -338,6 +338,19 @@ def run_text_path(
         if c.source_type == "image":
             table.notes.append("region_has_no_text_layer")
 
+        # ——— F-001 压行检测（只告警、不改数据，见 rules 那一节的开头）———
+        # **懒算词坐标**：`page_words` 要读整页文字层，而 90 篇实测只有 10 处命中。
+        # 先跑不要 PDF 的前三层，只有它们都过了才去取词做第 4 层确认。
+        if dt.cells and rules.suspicious_tall_rows(dt.cells):
+            merged = rules.detect_merged_rows(
+                dt.cells, rows, pdfio.page_words(norm_pdf, c.page)
+            )
+            for i, texts in merged:
+                table.notes.append(
+                    f"{rules.MERGED_ROW_NOTE}行{i}: "
+                    + " | ".join(t[:24] for t in texts[:4])
+                )
+
         caption = c.label.text if c.label else dt.caption
         # 只拿**同类** caption 当竞争者 —— 图注天然会列举表格的行标识（实测 pbc_21078 的
         # Fig.1 图注列了 EW5/SK-NEP-1/Rh28/KT-13，正是 TABLE I 的首列），混进来必然误报。

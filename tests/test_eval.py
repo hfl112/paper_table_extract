@@ -362,12 +362,31 @@ class TestScorerImageTableSupport:
         assert gold_io.score_against(g, rows).totals["match"] == 1
 
     def test_duplicate_anchor_is_finding_not_crash(self, tmp_path):
-        """`pbc_24724 fig_1` 末尾 3 行全空 → 锚点全是空串。
+        """锚点重复要记成 finding、不许中断打分。
 
-        原实现在这里 raise，而那恰恰是最需要打分的一张表。
+        原实现在这里 raise，而重复恰恰出现在最需要打分的图片表上。
+
+        **触发条件换过一次**：原来用"末尾几行全空 → 锚点全是空串"来造重复，
+        但全空行现在在 `split_rows` 里就被丢掉了（那是更该在源头解决的问题，
+        见那里的注释）。所以改用**真正重复的值** —— OCR 把两个不同的瘤系名
+        读成同一串，实测 `pbc_21296 p03_fig_1` 上 `ALL-17` 出现 4 次。
         """
         g = _write_gold(tmp_path, "anchor,Resp,source\nA,PD,human\n", expect_data_rows="3")
-        rows = [["Model", "Resp"], ["A", "PD"], ["", ""], ["", ""]]
+        rows = [["Model", "Resp"], ["A", "PD"], ["ALL-17", "PD1"], ["ALL-17", "SD"]]
         res = gold_io.score_against(g, rows)
         assert res.anchor_not_unique, "锚点重复必须被记为 finding"
         assert not res.fatal, "但不能中断打分"
+
+    def test_all_blank_rows_are_dropped(self, tmp_path):
+        """整行全空的行不算数据行 —— 它撑不起锚点，只会虚增重复与多出行。
+
+        实测 `pbc_24724 p05_fig_1` 基线产物 46 个数据行里 8 行全空；
+        丢掉之后 `#0+#1` 从 38/46 变成 38/38 唯一。
+        """
+        g = _write_gold(tmp_path, "anchor,Resp,source\nA,PD,human\n",
+                        expect_data_rows="1", expect_cols="2")
+        rows = [["Model", "Resp"], ["A", "PD"], ["", ""], ["", "   "]]
+        res = gold_io.score_against(g, rows)
+        assert not res.anchor_not_unique, "全空行应当被丢掉，不该造成锚点重复"
+        assert not res.shape, f"丢掉全空行后应当只剩 1 个数据行，实际 {res.shape}"
+        assert res.extra_rows == [], "全空行不该被算成多出行"

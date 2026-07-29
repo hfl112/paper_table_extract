@@ -122,6 +122,16 @@ def split_rows(rows: list[list[str]], section_rows: bool) -> tuple[list[str], li
         if section_rows and is_section_row(r):
             current = r[0].strip()
             continue
+        if not any(c.strip() for c in r):
+            # **整行全空的行直接丢掉。** 它不可能对上 gold 里任何一行，留着只有坏处：
+            #   1. 锚点变成空串 ⇒ 多个空行互相撞车 ⇒ 打分器报"锚点不唯一"、
+            #      然后整张表的逐格分都被标成不可信
+            #   2. 虚增 `多出行` 与实际数据行数
+            # 实测 `pbc_24724 p05_fig_1` 基线产物 46 个数据行里 **8 行全空**；
+            # 去掉它们之后 `#0+#1` 从 38/46 变成 **38/38 唯一**。
+            # 注意这**不会掩盖"产品吐空行"这个问题** —— 行数由 `expected.csv` 那边
+            # 按 manifest 的 n_rows 断言，那份计的是原始行数。
+            continue
         data.append(r)
         sections.append(current)
     return header, data, sections
@@ -289,6 +299,23 @@ class ScoreResult:
     mismatches: list[CellVerdict] = field(default_factory=list)
     anchor_not_unique: list[tuple[str, int]] = field(default_factory=list)
     fatal: str = ""
+    # ═══ 整行判据（`rows_*`）—— 逐格命中率会掩盖漏行 ═══
+    #
+    # 实测：`pbc_21296 p04_table_i` 报 **84/84 = 100%**，同时**漏了 2 个数据行**
+    # （`ALL-8`/`ALL-16`，候选 A 那个压行问题）。
+    # 100% 只算了"对上号的行"里的格子，漏掉的行根本没进分母 ——
+    # 像考试只算你答了的题，没答的不算错，所以能拿满分却少答两道。
+    #
+    # 而目标(b)要的是「瘤系 × 处理 × 响应 在**同一行上**同时对」。
+    # 所以这里按 gold 的**每一个数据行**记账，**漏行直接算错**：
+    #   rows_total    分母 = gold 里该计分的行数（不含未标行）
+    #   rows_full     该行全部 check_cols 都对
+    #   rows_partial  部分对
+    #   rows_missing  整行没抽到（= len(missing_rows) 的计分子集）
+    rows_total: int = 0
+    rows_full: int = 0
+    rows_partial: int = 0
+    rows_missing: int = 0
 
     @property
     def totals(self) -> dict[str, int]:
@@ -358,9 +385,15 @@ def score_against(
         if gold.sources.get(anchor, "agreed") not in src_ok:
             continue
         got = actual.get(anchor)
+        labeled = sum(1 for wv in want.values() if wv)
+        if labeled:
+            res.rows_total += 1               # 分母只算"至少标了一列"的行
         if got is None:
             res.missing_rows.append(anchor)
+            if labeled:
+                res.rows_missing += 1         # **漏行算错**，这是整行判据的全部意义
             continue
+        row_ok = row_bad = 0
         for col, wv in want.items():
             bucket = res.per_col[col]
             if not wv:
@@ -380,11 +413,17 @@ def score_against(
                 ok = mine == wv
             if ok:
                 bucket["match"] += 1
+                row_ok += 1
             else:
                 bucket["mismatch"] += 1
+                row_bad += 1
                 res.mismatches.append(CellVerdict(anchor, col, mine, "mismatch"))
+        if labeled:
+            if row_bad == 0:
+                res.rows_full += 1
+            elif row_ok:
+                res.rows_partial += 1
 
-    scored_anchors = {a for a in gold.values if gold.sources.get(a, "agreed") in src_ok}
     res.extra_rows = [a for a in actual if a not in gold.values]
     return res
 
@@ -485,6 +524,16 @@ def main() -> int:
     ap.add_argument("--source", default="human",
                     help="计分的 source 档，逗号分隔。默认只算 human；"
                          "用 human,agreed 可看「LLM 与工具一致但没人看过」那部分的规模")
+    ap.add_argument("--map", default="",
+                    help="产物目录名映射，`PDF名=目录名` 逗号分隔。"
+                         "回归用 —— `regression.sh` 的目录名是 `--prefix`（如 `gold_28772`），"
+                         "不是 PDF 的 stem，打分器默认按 stem 找会全部 miss")
+    ap.add_argument("--suggest-anchors", action="store_true",
+                    help="给每张 gold 找「在我们产物里也还唯一」的锚点列组合（只报计数，不报值）")
+    ap.add_argument("--baseline", type=Path, metavar="CSV",
+                    help="与基线快照对账并决定退出码。缺少基线文件时只打分、不判定")
+    ap.add_argument("--tier", default="full", choices=("fast", "full"),
+                    help="只对账基线里 tier 不高于本档的条目（fast ⊂ full）")
     args = ap.parse_args()
 
     if args.validate_anchors:
@@ -497,16 +546,116 @@ def main() -> int:
         print("  source 分布:", dict(Counter(g.sources.values())))
         return 0
     if args.score:
-        return cmd_score(args.score, args.outdir, set(args.source.split(",")))
+        pmap = dict(kv.split("=", 1) for kv in args.map.split(",") if "=" in kv)
+        if args.suggest_anchors:
+            return cmd_suggest_anchors(args.score, args.outdir, pmap)
+        return cmd_score(args.score, args.outdir, set(args.source.split(",")),
+                         prefix_map=pmap, baseline=args.baseline, tier=args.tier)
     ap.print_help()
     return 0
 
 
-def cmd_score(gold_dir: Path, outdir: Path, sources: set[str]) -> int:
+def cmd_suggest_anchors(gold_dir: Path, outdir: Path,
+                        prefix_map: dict[str, str] | None = None) -> int:
+    """给每张 gold 找「在**我们的产物**里也还唯一」的锚点列组合。
+
+    ═══ 先把问题看清，否则会改错东西 ═══
+
+    打分器报的 `锚点不唯一 9 组: [('ALL-17', 4), ...]` 是发生在**我们抽出来的表**里，
+    **不是 gold 里** —— gold 的锚点唯一性在 `load()` 里当场校验过，不唯一根本加载不了。
+    真实原因是 OCR 把不同的瘤系名读成了同一串（`ALL-17` 出现 4 次）。
+
+    所以「换锚点列」要找的是：**即使我们这边读糊了，仍然能把行区分开**的列组合。
+    单列不行就试两列拼（瘤系名 + 组织学），像 `pbc_28772` 的 `Model + Agent` 那样。
+
+    ═══ 非对称契约 ═══
+
+    只打印**列序号和唯一性计数**，不打印任何格子的值 —— gold 和产物的都不打印。
+    所以它不会泄露答案，也不会变成"照着答案挑锚点"。
+    """
+    prefix_map = prefix_map or {}
+    for gp in sorted(gold_dir.glob("*.gold")):
+        try:
+            g = load(gp)
+        except GoldError as e:
+            print(f"{gp.stem}: gold 加载失败 {e}")
+            continue
+        stem = Path(g.pdf).stem
+        csv_path = outdir / prefix_map.get(stem, stem) / g.csv_name
+        if not csv_path.exists():
+            print(f"{gp.stem}: 找不到产物 {csv_path}")
+            continue
+        rows = list(csv.reader(csv_path.open(newline="")))
+        if len(rows) < 2:
+            print(f"{gp.stem}: 产物不足 2 行")
+            continue
+        _, data, _ = split_rows(rows, g.section_rows)
+        n = len(rows[0])
+        cols = {i: forward_fill([r[i] if i < len(r) else "" for r in data])
+                for i in range(n)}
+        cur = "+".join(g.anchor_cols)
+        print(f"\n══ {gp.stem}   产物 {len(data)} 数据行 x {n} 列   现用锚点: {cur}")
+        singles = []
+        for i in range(n):
+            u = len(set(cols[i]))
+            singles.append((u, i))
+            mark = "✔唯一" if u == len(data) else f"{u}/{len(data)}"
+            print(f"     #{i}: {mark}")
+        # 只在单列都不唯一时才试两列 —— 锚点越短越稳，能单列就别拼
+        if not any(u == len(data) for u, _ in singles):
+            print("     单列都不唯一，试两列拼：")
+            best = []
+            for i in range(n):
+                for j in range(i + 1, n):
+                    u = len({f"{a}|{b}" for a, b in zip(cols[i], cols[j])})
+                    best.append((u, i, j))
+            best.sort(key=lambda x: -x[0])
+            for u, i, j in best[:6]:
+                mark = "✔唯一" if u == len(data) else f"{u}/{len(data)}"
+                print(f"       #{i}+#{j}: {mark}")
+    print("\n只打印列序号与唯一性计数，不打印任何格子的值（gold 与产物都不打）。")
+    return 0
+
+
+def load_baseline(path: Path) -> dict[str, dict]:
+    """读基线快照。列：gold,tier,scored,match,missing,extra"""
+    out: dict[str, dict] = {}
+    with path.open(newline="") as f:
+        for r in csv.DictReader(f):
+            if not r.get("gold", "").strip() or r["gold"].lstrip().startswith("#"):
+                continue
+            out[r["gold"].strip()] = {
+                "tier": r["tier"].strip(),
+                **{k: int(r[k]) for k in ("scored", "match", "missing", "extra",
+                                          "rows_full", "rows_total")},
+            }
+    return out
+
+
+# 基线判定：**只有"变差"才 exit 1**。
+#
+# 这套三档跟 `holdout/report.py` 一致（✓ 通过 / ▲ 变好待更新基线 / ✗ 变差）。
+# 为什么不用"完全相等"：expected.csv 那边用的是精确快照，因为那些是行列数、
+# 整数、确定性的。而这里的 `match` 依赖 OCR 结果，一旦模型或 PIL 版本动一下就漂 ——
+# 精确相等会天天亮红灯，然后大家就对红色脱敏了（`AGENTS.md` 里写过这一课）。
+# 但"变好了也要吭一声"仍然必要，否则改进会静默淹掉、基线永远停在旧值。
+WORSE_KEYS = ("match", "rows_full")      # 越大越好
+WORSE_KEYS_INV = ("missing", "extra")  # 越小越好
+
+
+def cmd_score(gold_dir: Path, outdir: Path, sources: set[str],
+              prefix_map: dict[str, str] | None = None,
+              baseline: Path | None = None, tier: str = "full") -> int:
     """对 gold_dir 下每份 gold 打分。**输出永不包含 gold 的值。**
 
     gold 放仓库外（默认 `/Users/funanhe/pte_gold/`，可用 `PTE_GOLD_DIR` 覆盖）。
     详见 `score_against` 的非对称契约。
+
+    给了 `baseline` 就同时与基线快照对账，变差则返回 1 —— 这是为了接进
+    `eval/regression.sh`。接它的直接动机是一次真事故（`log.md` §37.1）：
+    `1.output/` 比产品代码旧了 3 天，打分报「漏行 5」，
+    而那 5 行**早就修好了**，纯粹是产物过期。打分不在回归里 ⇒ 没人重跑产物 ⇒
+    拿过期产物下结论。
     """
     if not gold_dir.exists():
         print(f"gold 目录不存在: {gold_dir}")
@@ -516,11 +665,16 @@ def cmd_score(gold_dir: Path, outdir: Path, sources: set[str]) -> int:
     if not golds:
         print(f"{gold_dir} 下没有 *.gold 文件")
         return 0
+    prefix_map = prefix_map or {}
+    base = load_baseline(baseline) if (baseline and baseline.exists()) else {}
+    if baseline and not base:
+        print(f"（基线文件 {baseline} 不存在或为空 —— 只打分，不判定）")
+    got: dict[str, dict] = {}
 
     print(f"打分档: source ∈ {sorted(sources)}    （gold 的值不会出现在下面任何一行）")
     print("=" * 100)
-    print("%-26s %7s %7s %8s %10s %8s %8s" %
-          ("gold", "计分", "命中", "命中率", "未标", "漏行", "多出行"))
+    print("%-26s %7s %7s %8s %10s %8s %8s   %s" %
+          ("gold", "计分", "命中", "命中率", "未标", "漏行", "多出行", "整行全对"))
     print("-" * 100)
     bad = 0
     for gp in golds:
@@ -530,8 +684,13 @@ def cmd_score(gold_dir: Path, outdir: Path, sources: set[str]) -> int:
             print(f"{gp.name:26s} gold 文件本身有问题: {e}")
             bad += 1
             continue
-        csv_path = outdir / Path(g.pdf).stem / g.csv_name
+        stem = Path(g.pdf).stem
+        csv_path = outdir / prefix_map.get(stem, stem) / g.csv_name
         if not csv_path.exists():
+            # 基线里没这一条、或它属于更高档 ⇒ 本档本来就不该产出，不算失败
+            want = base.get(gp.stem)
+            if base and (want is None or (tier == "fast" and want["tier"] == "full")):
+                continue
             print(f"{gp.name:26s} 找不到产物 {csv_path}")
             bad += 1
             continue
@@ -542,10 +701,18 @@ def cmd_score(gold_dir: Path, outdir: Path, sources: set[str]) -> int:
             bad += 1
             continue
         t = res.totals
+        got[gp.stem] = {"scored": t["scored"], "match": t["match"],
+                        "missing": len(res.missing_rows), "extra": len(res.extra_rows),
+                        "rows_full": res.rows_full, "rows_total": res.rows_total}
         rate = f"{t['match'] / t['scored']:.1%}" if t["scored"] else "—"
-        print("%-26s %7d %7d %8s %10d %8d %8d" %
+        rrate = f"{res.rows_full / res.rows_total:.0%}" if res.rows_total else "—"
+        print("%-26s %7d %7d %8s %10d %8d %8d   %s" %
               (gp.stem[:26], t["scored"], t["match"], rate,
-               t["unlabeled"], len(res.missing_rows), len(res.extra_rows)))
+               t["unlabeled"], len(res.missing_rows), len(res.extra_rows),
+               f"{res.rows_full}/{res.rows_total}={rrate}"))
+        if res.rows_partial or res.rows_missing:
+            print(f"      整行: 全对 {res.rows_full} / 部分对 {res.rows_partial} / "
+                  f"**整行漏抽 {res.rows_missing}** （分母 {res.rows_total}，漏行算错）")
         for line in res.shape:
             print(f"      形状: {line}")
         if res.anchor_not_unique:
@@ -563,6 +730,59 @@ def cmd_score(gold_dir: Path, outdir: Path, sources: set[str]) -> int:
     print("-" * 100)
     print("对分歧只打印**我们这边**的值。要看 gold 期望值，请自己打开 gold 文件 ——")
     print("这条不对称是刻意的，防的是「照着答案调阈值」把 gold 变成第二个开发集。")
+
+    if not base:
+        return 1 if bad else 0
+
+    print()
+    print(f"########## 与基线 {baseline} 对账（档: {tier}）##########")
+    worse = better = 0
+    for name, want in sorted(base.items()):
+        if tier == "fast" and want["tier"] == "full":
+            continue
+        have = got.get(name)
+        if have is None:
+            print(f"  ✗ {name:30s} 基线里有、本次没打出分（产物缺失或 gold 加载失败）")
+            worse += 1
+            continue
+        deltas = []
+        w = b = False
+        if have["rows_total"] != want["rows_total"]:
+            # 分母变了 ⇒ gold 的标注量改了 ⇒ rows_full 的比较**没有意义**，先让人确认
+            print(f"  ✗ {name:30s} **分母变了**: rows_total "
+                  f"{want['rows_total']}→{have['rows_total']}（gold 标注量改了？先确认再比 rows_full）")
+            worse += 1
+            continue
+        for k in WORSE_KEYS:
+            d = have[k] - want[k]
+            if d:
+                deltas.append(f"{k} {want[k]}→{have[k]}")
+                w |= d < 0
+                b |= d > 0
+        for k in WORSE_KEYS_INV:
+            d = have[k] - want[k]
+            if d:
+                deltas.append(f"{k} {want[k]}→{have[k]}")
+                w |= d > 0
+                b |= d < 0
+        if w:
+            print(f"  ✗ {name:30s} **变差**: {', '.join(deltas)}")
+            worse += 1
+        elif b:
+            print(f"  ▲ {name:30s} 变好: {', '.join(deltas)}  ← 确认后请更新基线")
+            better += 1
+        else:
+            print(f"  ✓ {name:30s} scored={have['scored']} match={have['match']} "
+                  f"missing={have['missing']} extra={have['extra']} "
+                  f"整行全对={have['rows_full']}/{have['rows_total']}")
+    print(f"  —— 变差 {worse} / 变好 {better}")
+    if worse:
+        print("  ✗ gold 分变差 ⇒ 回归失败。若是有意为之，逐条确认后更新 "
+              f"{baseline} 并在 log.md 记下原因。")
+        return 1
+    if better:
+        print("  ▲ 只变好、不算失败。但**别忘了更新基线**，否则下次改坏会被旧基线放过。")
+    return 1 if bad else 0
     return 1 if bad else 0
 
 

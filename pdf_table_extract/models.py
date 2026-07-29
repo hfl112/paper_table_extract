@@ -34,6 +34,48 @@ class Rect:
 
 
 @dataclass(frozen=True)
+class Word:
+    """文字层里的一个词 + 它的矩形。给「压行检测」用（见 rules.detect_merged_rows）。
+
+    只需要坐标和文本 —— 方向不用带，因为 `pdfio.page_words` 已经把横向表页
+    的坐标转到旋转后的帧里了，竖排文字在那个帧里就是正常水平文字。
+    """
+
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    text: str
+
+    @property
+    def cx(self) -> float:
+        return (self.x0 + self.x1) / 2
+
+    @property
+    def cy(self) -> float:
+        return (self.y0 + self.y1) / 2
+
+
+@dataclass(frozen=True)
+class TableCellBox:
+    """docling `TableCell` 的几何 + 索引，翻译成纯数据。
+
+    为什么必须单独带出来（`log.md` §40）：产品写进 CSV 的网格来自
+    `export_to_dataframe()`，而压行检测需要**每个格子的高度**，只有 `table_cells` 有。
+    实测这两套视图在 **184/427 张表上行数不一致**（多级表头被拼平成一行），
+    所以不能用行号在两者之间换算 —— 见 `rules.match_cell_row_to_output_row`。
+    """
+
+    text: str
+    r0: int          # start_row_offset_idx
+    c0: int          # start_col_offset_idx
+    row_span: int
+    col_span: int
+    column_header: bool   # docling 自己的表头判定，**别自己猜表头有几行**
+    bbox: Rect | None
+
+
+@dataclass(frozen=True)
 class ImageInfo:
     """页面上的一张嵌入位图。"""
 

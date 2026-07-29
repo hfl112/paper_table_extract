@@ -47,6 +47,9 @@ conda run -n gemini pdf-table-extract "0.pdf_input/pbc_28772.pdf" --all --no-ocr
 echo "########## 快档：续表 caption 为空，靠列名一致拼接 ##########"
 conda run -n gemini pdf-table-extract "0.pdf_input/pbc_26870.pdf" --all --no-ocr -o "$OUT" --prefix all_26870                             # table_1 45 行（27 + 19-1）
 
+echo "########## 快档：gold 打分需要的文字表（其余 gold 表已被上面的命令覆盖）##########"
+conda run -n gemini pdf-table-extract "0.pdf_input/pbc_21296.pdf" -k response --no-ocr -o "$OUT" --prefix gold_21296                       # table_i 44 行（横向转正）
+
 echo "########## 快档：负面测试 ##########"
 conda run -n gemini pdf-table-extract "0.pdf_input/566455.pdf" -k Demographic -o "$OUT" --prefix neg_preprint                             # 应退出码 3：preprint 拒跑
 echo "neg_preprint $?" >> "$OUT/.exit"
@@ -71,4 +74,27 @@ fi
 
 echo
 echo "########## 断言：与 eval/expected.csv 的现状快照对账 ##########"
-conda run -n gemini python eval/checks.py regression "$OUT" eval/expected.csv --tier "$TIER" || exit 1
+conda run -n gemini python eval/checks.py regression "$OUT" eval/expected.csv --tier "$TIER" || RC=1
+
+# ═══ gold 打分：断言「逐格准确性」没退步 ═══
+#
+# expected.csv 断言的是**形状**（行列数、有没有出表）；gold 分断言的是**内容对不对**。
+# 两者不能互相替代：`pbc_21296 p04_table_i` 曾经形状全绿、同时漏掉 2 个数据行。
+#
+# 为什么非要接进来（`log.md` §37.1 的真事故）：打分器不在回归里 ⇒ 没人重跑产物 ⇒
+# `1.output/` 比代码旧了 3 天 ⇒ 打分报「漏行 5」，而那 5 行早就修好了。
+# **过期产物给出的是一个自信的错误结论**，比不打分更危险。
+#
+# `--map` 是必需的：上面用的目录名是 `--prefix`（`gold_28772`），不是 PDF 的 stem，
+# 打分器默认按 stem 找会全部 miss、而 miss 是静默的（只少几行输出）。
+GOLD_MAP="pbc_28772=gold_28772,pbc_26870=all_26870,pbc_21296=gold_21296"
+if [ "$TIER" = "full" ]; then
+  # 全量档才有图片表的产物（快档 --no-ocr，图片路径整个不跑）
+  GOLD_MAP="pbc_28772=gold_28772,pbc_26870=all_26870,pbc_21296=resp_21296,pbc_24724=resp_24724"
+fi
+echo
+echo "########## 断言：与 eval/expected_gold.csv 的逐格准确性基线对账 ##########"
+conda run -n gemini python eval/gold.py --score --outdir "$OUT" --source human,agreed \
+  --map "$GOLD_MAP" --baseline eval/expected_gold.csv --tier "$TIER" || RC=1
+
+exit "${RC:-0}"

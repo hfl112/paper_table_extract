@@ -12,7 +12,7 @@ from pathlib import Path
 import fitz
 
 from . import rules
-from .models import DocInfo, ImageInfo, Label, PageInfo, Rect
+from .models import DocInfo, ImageInfo, Label, PageInfo, Rect, Word
 
 # preprint / peer-review 版检测。实测 566455 每页页脚有 bioRxiv 水印：
 # bioRxiv×126 / preprint×189 / peer review×63。字符串级检测即可，比几何判定可靠得多。
@@ -373,6 +373,38 @@ def page_spans(path: str | Path, page_no: int) -> list[tuple[Rect, str]]:
             for line in block.get("lines", []):
                 for span in line["spans"]:
                     out.append((_rect(span["bbox"]), span["text"]))
+        return out
+    finally:
+        doc.close()
+
+
+def page_words(path: str | Path, page_no: int) -> list[Word]:
+    """取某页所有词的 (矩形, 文本)。1-based 页码。给 `rules.detect_merged_rows` 用。
+
+    ═══ 必须做旋转变换，这是最容易踩的坑（实测）═══
+
+    在归一化 PDF 上（`page.set_rotation(90)` 之后）实测：`page.rotation` 报 90、
+    `page.rect` 确实换成了 792x594，**但 `get_text` 返回的坐标一个字都没变** ——
+    `pbc_21296` p4 的首词 `Pediatr` 在原始与归一化 PDF 上 bbox 完全相同。
+    也就是说**词坐标停留在未旋转帧**。
+
+    而 **docling 用的是旋转后的帧**：它报 p4 尺寸 792x594、表 bbox 的 x 一直到 730.6
+    —— 超过了未旋转的页宽 594。
+
+    两者不在同一坐标系。不做这个变换就拿 docling 的 cell bbox 去框词，
+    **一个词都框不到**，压行检测在所有横向表上静默失效。
+    变换之后横向表的竖排文字变成正常水平文字，下游不必分方向做分支。
+    """
+    doc = fitz.open(str(path))
+    try:
+        page = doc[page_no - 1]
+        mat = page.rotation_matrix if page.rotation else None
+        out: list[Word] = []
+        for x0, y0, x1, y1, text, *_ in page.get_text("words"):
+            r = fitz.Rect(x0, y0, x1, y1)
+            if mat is not None:
+                r = r * mat
+            out.append(Word(r.x0, r.y0, r.x1, r.y1, text))
         return out
     finally:
         doc.close()
