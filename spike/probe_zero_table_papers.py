@@ -49,7 +49,16 @@ def looks_like_reference(ctx: str) -> bool:
 
 
 def main() -> None:
-    pdfs = sorted(HOLDOUT.glob("*.pdf"))
+    # `--pdf-dir` 是后加的，默认仍是留出集 —— 老的调用方式（不带参数）行为不变。
+    # 加它是为了能在 `gen/` 那批 PPTP 新料上跑同一个非循环检查。
+    import argparse
+
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--pdf-dir", type=Path, default=HOLDOUT)
+    args = ap.parse_args()
+    pdfs = sorted(args.pdf_dir.glob("*.pdf"))
+    if not pdfs:
+        raise SystemExit(f"✗ {args.pdf_dir} 下没有 PDF")
     print(f"{'PDF':44s} {'行首':>4s} {'任意':>4s} {'仅非行首':>8s}  疑似漏检的上下文")
     print("-" * 120)
 

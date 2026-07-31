@@ -1626,3 +1626,118 @@ LLM 判读：「Fig. 2a 是染色质复合物示意图；**Fig. 2b 是一个基�
 **LLM gold 的效力边界**：LLM 读图本身也是 OCR，**不能当逐格真值**；
 它不与 paddle 管线共享失败模式，所以只有「**是不是表**」这个二分判断算独立证据。
 抽样 15/108，比例有抽样误差。
+
+---
+
+# 第三批语料（PPTP 97 篇 / 深挖 10 篇）—— F-022 起
+
+语料与跑法见 `gen/README.md`。与前两批的关键区别：**这是第一次在没参与开发的文献上真正跑抽取**
+（`holdout/` 刻意只跑 `--list`）。**边界**：全部同属 PPTP 领域，只验"出版社/年代/版式"轴，
+**不构成跨领域泛化证据**。
+
+方法上多了一道：**预登记**（`gen/prereg.csv`，跑之前写死，md5 `7600686614fc459a…`）。
+78 条里构成断言的 48 条，`?` 30 条 —— `?` 不算断言，本批结论强度的上限就是那 48 条。
+预登记是 **agent 读 PDF** 得出的，按 `eval/gold.py` 的分档只能算 `agreed`，不是 `human`。
+
+跑法：`bash gen/run.sh noocr`（12 篇 × 3 条命令，36 条全部 exit 0）。
+产出 manifest 87 行 = 出表 28 行 + 失败 59 行，唯一 CSV 20 张；
+`confidence` high 15 / medium 10 / low 3；`matched_on` **cell 16 > caption 12**。
+
+## F-022 —— 转正页上 caption 的描述段抓不到，导致**静默漏表**
+
+**证据（机制已定位到行）。** `pdfio._absorb_legend_tail()` 全程在**未旋转的页坐标**里工作：
+`bottom = block.bbox[3]`（y 下沿）、要求下一个 block 与 caption block **横向有重叠**
+（`min(bx1,nx1) - max(bx0,nx0) > 0`）、间距取 `ny0 - bottom`（y 方向）。
+
+而横向表页上文字 `dir=(0,-1)`，**视觉上下相邻的两行在页坐标里是左右并排**。实测
+`j_pharmthera_2024_108742` p61：
+
+| block | bbox | dir | 内容 |
+|---|---|---|---|
+| caption | (56, 354, **66**, 384) | (0,-1) | `Table 2` |
+| 描述段 | (**67**, 392, 79, 678) | (0,-1) | `Objective response rates for HSP90, HDAC, and proteasome inhibitors.` |
+
+横向重叠 = `min(66,79) - max(56,67)` = **-1 ≤ 0** ⇒ 走 `continue` 跳过 ⇒ 描述段永远吸不进来。
+（那句 `continue` 是**故意**加的，为了跳过 PMC 版左边缘竖排的 `Author Manuscript` 水印
+block —— 见 `pdfio.py` 注释。它现在连真 legend 一起跳了。）
+对照 p67（非转正）：标号与描述在**同一个 block** 里，所以 `Table 8` 完好。
+
+**后果：`-k response` 静默漏掉 4 张表。** `pharmthera` 9 张表里 5 张 caption 被截成裸标号
+（`Table 2/3/4/5/7/9` 只剩 7 个字符），其中 Table 2/3/5/7 的原文 caption 明写
+`Objective response rate(s)`，而表体里只有 `ORR`/`PD2 %` 这类缩写、**没有 `response` 字面量**
+⇒ 两条匹配路径同时落空。
+
+**这是最坏的一类：工具没举手。** 铁律 #2 的失败行只在"caption 命中了却抽不出"时才留；
+这里 caption 压根没命中，工具**不知道自己该命中**，所以 manifest 里连失败行都没有。
+用户搜 `-k response` 得到 3 张表，没有任何迹象表明另有 4 张标题写着 "objective response" 的表。
+
+**命中范围。** 97 篇扫描：转正页上的表 caption **22 个中 7 个 < 25 字（32%）**，
+普通页 **177 个中 3 个（2%）**，差 16 倍。但 7 个里 6 个来自 `pharmthera` 一篇，
+另 1 个（`s00280` p7 的 `Table 2 continued`，17 字）**是真·完整 caption 不是截断**。
+⇒ **真实分母是 1 篇 / 6 张表**，"32%" 这个比例不要单独引用。
+需要同时满足两个条件才会触发：① 页是横向表；② 该版式把标号与描述**拆成两个 block**。
+开发集与留出集的横向表都是标号+描述同 block，所以从没暴露过。
+
+**反例（同样是转正页但没事）**：`pbc_22188` p2 caption 完整
+（`TABLE I. Activity for Mapatumumab Against the PPTP In Vivo` —— 人读渲染图确认原文就到 `In Vivo`）。
+
+**修法假设（未验证）。** 让 `_absorb_legend_tail` 认方向：按 block 的 `dir` 决定哪个轴是
+"下一行"、哪个轴是"重叠"；或者对已判需转正的页，改用归一化后的 PDF 重扫标号。
+后者要注意标号扫描当前跑在**原始** PDF 上，改动面比前者大。
+
+## F-023 —— 页边marginalia 被吸成表的一整列（未举手）
+
+**证据。** `pbc_22188/p02_table_i.csv` 出 `45 数据行 × 13 列`，而人读 p2 渲染图
+逐行数得 **45 行 × 12 列**。第 13 列的表头是 `'308'`（**页码**）、第 1 个数据格是
+`'Smith'`（书眉 `Smith et al.`）。整列除这两格外全空。
+
+**现状标记：`notes` 里没有任何关于多出一列的提示**，`grid_status` 也没标。
+该表的 `confidence=medium` 是**因为另一件事**（`merged_row?`）才降的，不是因为这一列。
+若这张表没有压行，它会拿到 `high` + 空 `notes`。
+
+**命中范围**：深挖 10 篇里 1 张。**没有做 97 篇普查**（要普查得逐张人核列数，成本高）。
+
+**修法假设（未验证）**：docling 的表格区域框吃进了页边元素。可考虑在
+`engine_docling._df_to_rows` 之后加一条：某一列的非空格子数 ≤ 2 且内容匹配
+页码/书眉模式时，标 `notes` 而不是直接删（删列有丢数据风险，参考 F-008 的教训）。
+
+## F-024 —— `(Cont'd )` 续表没拼上，根因却在**首页表头解析崩了**
+
+**证据。** `0008_5472_can_16_0122` 的 `Table 1` 跨 p2–p3，输出成**两张 CSV**
+（`p02_table_1.csv` 67 数据行 + `p03_table_1.csv` 19 数据行），没有 `spans_pages`。
+
+判据一必然不中：`rules._CONTINUED = re.compile(r"\(\s*continued\s*\)", re.I)` 要求字面
+`continued`，而这里写的是 `(Cont'd )`。**但真正的原因是判据二也被带崩了**：
+
+| | 表头 |
+|---|---|
+| p2（首页）| `['Tumor','Tumor','','Mean number','Mean number','Total no. of of correctresponse','Proportion']` ← **崩了** |
+| p3（续页）| `['Tumor code','Tumor line','Histology','Mean number incorrect','Mean number correct','Total no. of studies','Proportion of correctresponse']` ← 正确 |
+
+`same_column_names()` 拿崩掉的表头去比正确的表头，当然不等 ⇒ 不拼。
+**若 p2 表头解析正确，判据二本来能兜住 `(Cont'd )`。**
+
+**连带的更严重后果：p2 的第 1 个数据行被表头第二层污染。**
+`['code A1','line BT-29','Histology Kidney ATRT','incorrect 30.571','correct','studies 42','0.725']`
+—— 每一列都是"表头词 + 数据值"粘在一起。这张表 `confidence=high`、`notes` **为空**，
+是本批唯一被 `eval/checks.py detect` 判为「**没举手的错**」的表
+（detect 另报 38 格不在文字层、3 处 merged_row）。
+
+**对照：无括号的 `continued` 拼上了。** `s00280_011_1618_8` 的 `Table 2 continued`
+（小写、无括号）判据一同样不中，但两页表头逐字相同 ⇒ `spans_pages=6-7(same_columns)`，
+43×12 `high`。**所以两条判据的设计是对的**，问题出在表头解析，不在续表判据本身。
+
+**修法假设（未验证）。** 优先修两层表头解析（AGENTS.md 事实 #16 记的是 docling 用 `.`
+拼平，这里是**打乱**，是另一种表现）。把 `cont'd`/`cont.` 加进 `_CONTINUED` 是**治标**，
+而且加了也救不回被污染的首行。另可考虑：拼接失败但两页标号相同且相邻时，
+至少在 `notes` 写 `possible_continuation`（输出契约里本来就有这个值，目前没人写）。
+
+## 既有 findings 在本批的复现情况
+
+| id | 本批表现 |
+|---|---|
+| **F-001**（两行压一格） | **拿到了缺的分母**。4 张横向转正表里 **3 张复现**（`pbc_22188` / `pbc_22576` / `pbc_22741`），另在 `can_16_0122` 复现。§40 写回的检测**举手了**（`merged_row?` + 降到 `medium`），但**灵敏度不够**：`pbc_22188` 产品只标了 1 行，`eval/checks.py detect` 找出 3 行（数据行 40/42 另有两处）。人核 CSV 还发现第三种形态：`ALL-3` 的标识与数值被拆到**两个输出行**（行39 有标识无数值、行40 有数值无标识），这类"拆行"两个检测器都没报 |
+| **F-019**（退化 CSV） | 复现 1 张：`blood_2016_03_707414/p02_table_1.csv` **2 字节、0 行 0 列**。`confidence=low` + `notes=region_has_no_text_layer` 算是举了半只手，但它**仍然是一个 CSV 文件、manifest 里有 `csv_path`**，读起来像成功 |
+| **F-020**（色块被当表） | 就是上面那张 Blood 色块编码表。这次没有产出垃圾网格，而是产出了空 CSV（走成 F-019） |
+| **F-003**（标号漏检） | `spike/probe_zero_table_papers.py --pdf-dir` 跑 97 篇：**疑似漏检仅 2 处**，逐条读上下文**全是正文引用**（`is shown in Supplementary Table S3 and ranged from…` / `See supplemental Table 3 for individual…`）⇒ **零真漏检**。这是目前该判据最大的一次检验 |
+| **F-017**（断行连字符） | `pbc_26825/p08_table_4.csv` 触发 `hyphen_rejoined=2`，工作正常。副作用：`detect` 会因此报 2 格 `text_layer_partial`（重接后的串与原文字层不同），**是已知的良性误报** |
