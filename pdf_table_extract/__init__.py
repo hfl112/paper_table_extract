@@ -1,6 +1,8 @@
-"""pdf-table-extract：给一篇英文文献 PDF 和一组关键词，把命中的表格导出成 CSV。
+"""pdf-table-extract: given an English paper PDF (and optional keywords), export matching tables as CSV.
 
-泛用性原则：领域知识由用户提供，不由工具内置。工具只依赖排版惯例与结构信号。
+Generality principle: domain knowledge comes from the user (keyword files); the
+tool itself relies only on typesetting conventions and structural signals.
+Modes: list (label inventory), table (text-layer tables), figure (panel dual-read).
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
