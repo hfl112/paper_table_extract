@@ -4,6 +4,8 @@
 response
 relapse
 remission
+EFS
+# event-free survival: PPTP response tables often say only 'EFS T/C' / 'EFS distributions'
 
 # Response codes (PD/CR/PR/SD/MCR) are deliberately absent: too common in prose and
 # SD doubles as standard deviation. Filter downstream on the extracted CSVs instead.
