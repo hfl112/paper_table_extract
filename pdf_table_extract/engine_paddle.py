@@ -9,12 +9,19 @@ figures (17/101 intact row names); the dual-read merge replaced it.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from . import common
 from .common import Box, Rect
 
 common.silence()
+
+
+def _cpu_threads() -> dict:
+    """Pass the OMP thread budget through to paddle predictors (common.silence adopts SLURM_CPUS_PER_TASK)."""
+    n = os.environ.get("OMP_NUM_THREADS")
+    return {"cpu_threads": int(n)} if n and n.isdigit() else {}
 
 # The English recognition model must be explicit: the zh/en default reads -3 as a CJK glyph.
 EN_REC_MODEL = "en_PP-OCRv5_mobile_rec"
@@ -31,7 +38,7 @@ def _get_cell_det():
 
         common.hush_loggers()  # paddlex resets its logger to INFO at import
         # enable_mkldnn=False: paddle 3.3 oneDNN+PIR crashes on these CPUs
-        _cell_det = TableCellsDetection(model_name=CELL_DET_MODEL, enable_mkldnn=False)
+        _cell_det = TableCellsDetection(model_name=CELL_DET_MODEL, enable_mkldnn=False, **_cpu_threads())
     return _cell_det
 
 
@@ -47,6 +54,7 @@ def _get_plain_ocr():
             use_doc_unwarping=False,
             use_textline_orientation=False,
             enable_mkldnn=False,
+            **_cpu_threads(),
         )
     return _plain_ocr
 

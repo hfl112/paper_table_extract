@@ -40,6 +40,10 @@ def silence() -> None:
         # torch.compile is a net loss for one-shot CLI runs and crashes on old g++ (c++20);
         # setdefault, so exporting the variable yourself still overrides
         os.environ.setdefault("DOCLING_INFERENCE_COMPILE_TORCH_MODELS", "0")
+        # torch/paddle thread pools ignore Slurm cgroups and spawn one thread per MACHINE
+        # core; adopt the job's allocation instead (export OMP_NUM_THREADS to override)
+        if os.environ.get("SLURM_CPUS_PER_TASK"):
+            os.environ.setdefault("OMP_NUM_THREADS", os.environ["SLURM_CPUS_PER_TASK"])
         warnings.filterwarnings("ignore")
     hush_loggers()
 
