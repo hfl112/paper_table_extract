@@ -3,6 +3,5 @@
 
 xenograft
 PDX
-tumor line
-model
-# broad: pulls in unrelated tables; filter with the manifest's matched_on column
+in vivo
+# multi-word phrases are supported; matches 'In Vivo Panel', not the hyphenated 'in-vivo'
