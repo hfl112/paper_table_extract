@@ -3,8 +3,6 @@
 
 response
 relapse
-status
-# broad: pulls in unrelated tables; keep only if missing tables hurts more than extras
 remission
 
 # Response codes (PD/CR/PR/SD/MCR) are deliberately absent: too common in prose and
