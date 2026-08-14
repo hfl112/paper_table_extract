@@ -61,4 +61,4 @@ inflections (`xenograft` also hits `xenografts`); hyphens count as word characte
 access) -> `engine_docling/paddle/plumber.py` (heavy lifting) -> `evaluation.py`
 (reliability of the extracted CSVs) -> `csv_writer.py` (all output). `mode_*.py` files
 orchestrate; every judgement call with a threshold carries its measured evidence in a
-comment. `tests/` and `AGENTS.md` still describe the pre-refactor layout (known debt).
+comment.

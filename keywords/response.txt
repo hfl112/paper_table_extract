@@ -1,27 +1,22 @@
-# 疗效/响应 相关表格的同义词表
+# Synonyms for treatment-response tables.
 #
-# 这是**用户的领域知识，不是工具内置**（泛用性原则）。换领域直接删掉写自己的。
-# 用法：pdf-table-extract paper.pdf --keywords-file keywords/response.txt
-# 一行一个，OR 关系（命中任一即算）。以 # 开头的行是注释。
+# This is USER domain knowledge, not tool built-ins (generality principle).
+# Usage: --keywords-file keywords/response.txt ; one word per line, OR semantics.
 
 response
-# 匹配是"全词 + 屈折变体"，所以自动认得 responses / responded。
-# 实测它靠**表内内容**命中的居多（pbc_28772 的金标准表第 11 列表头是 `Obj. Response`，
-# caption 里一个 response 都没有）。
+# Matching is whole-word + inflections, so responses/responded match too.
+# Measured: content hits matter more than captions (pbc_28772's gold table has
+# no 'response' in the caption but an 'Obj. Response' column header).
 
 relapse
 status
-# blood_2014_12_518900 的 Table 1 是临床响应信息，但 caption 与内容里
-# **完全没有 `response` 这个词** —— 表头是
-# `Disease status at biopsy | Length of CR1, mo | Survival after relapse, mo | Current clinical status`。
-# ⚠️ `status` 很泛，会拉进不少无关表。
+# blood_2014_12_518900 Table 1 is clinical response data with NO 'response'
+# anywhere; its headers are 'Disease status at biopsy | Length of CR1, mo | ...'.
+# WARNING: 'status' is broad and pulls in unrelated tables.
 
 remission
-# 备用同义词，当前语料里未命中。
+# Backup synonym; no hits in the current corpus.
 
-# ---------------------------------------------------------------------------
-# 刻意**不放** PD / CR / PR / SD / MCR 这些响应码 —— 见 AGENTS.md
-# 「已决定：response 组不加响应码」。理由是选择性不够（PD/SD 出现得太广、
-# SD 还兼任"标准差"），不是技术做不到。
-# 响应码那一层留给下游：拿到 CSV 后按"至少含 N 个响应码"筛更准 ——
-# 数单元格是精确计数，在文本里数是近似猜测。
+# Response codes (PD/CR/PR/SD/MCR) are deliberately absent: not selective enough
+# (PD/SD appear everywhere, SD doubles as standard deviation). Filter downstream
+# on the extracted CSVs instead - counting cells is exact, counting text is not.

@@ -1,20 +1,18 @@
-# PDX / 人源移植瘤 相关表格的同义词表
+# Synonyms for PDX / xenograft tables.
 #
-# 这是**用户的领域知识，不是工具内置**（泛用性原则）。换领域直接删掉写自己的。
-# 用法：pdf-table-extract paper.pdf --keywords-file keywords/pdx.txt
-# 一行一个，OR 关系（命中任一即算）。以 # 开头的行是注释。
-#
-# 每个词都有实测依据 —— 都是某篇论文里"确实是 PDX 表但没写 PDX"的实际用词：
+# This is USER domain knowledge, not tool built-ins (generality principle).
+# Usage: --keywords-file keywords/pdx.txt ; one word per line, OR semantics.
+# Every word has measured evidence: a real PDX table that uses it instead of 'PDX'.
 
 xenograft
 PDX
-# pbc_28772 的金标准表 caption 写的是 "…for all PDX models"，只搜 xenograft 抓不到
+# pbc_28772's gold table caption says '...for all PDX models'; xenograft alone misses it
 
 tumor line
-# pbc_26870 的 Table 1 是 PDX 表，但 caption **就是 `Table 1` 三个字、无任何描述**，
-# 唯一信号是表内的 `Tumor Line` 列头
+# pbc_26870 Table 1 is a PDX table whose caption is literally just 'Table 1';
+# the only signal is the 'Tumor Line' column header inside
 
 model
-# pbc_30017 的 Table 1 写的是 "osteosarcoma models"。
-# ⚠️ 这个词很泛，会拉进不少无关表 —— 靠 manifest 的 matched_on 列筛。
-# 更怕漏就留着，更怕多就注释掉。
+# pbc_30017 Table 1 says 'osteosarcoma models'.
+# WARNING: broad; filter with the manifest's matched_on column.
+# Keep it if missing tables hurts more than extra ones; comment it out otherwise.
