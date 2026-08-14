@@ -13,7 +13,7 @@ typesetting conventions and structural signals.
 python pdf_table_extract.py paper.pdf --mode list > labels.csv
 
 # 2. text-layer tables (docling + pdfplumber second opinion); no keywords = export all
-python pdf_table_extract.py paper.pdf --mode table --keywords-file keywords/response.txt -o out --prefix paper1
+python pdf_table_extract.py paper.pdf --mode table --keywords-file keywords/response.txt --keywords-file keywords/pdx.txt -o out --prefix paper1
 
 # 3. table-like figure panels (cell detection + dual OCR reads, per-cell conflict flags)
 python pdf_table_extract.py paper.pdf --mode figure -o out --prefix paper1
