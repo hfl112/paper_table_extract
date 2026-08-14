@@ -1,18 +1,8 @@
-# Synonyms for PDX / xenograft tables.
-#
-# This is USER domain knowledge, not tool built-ins (generality principle).
-# Usage: --keywords-file keywords/pdx.txt ; one word per line, OR semantics.
-# Every word has measured evidence: a real PDX table that uses it instead of 'PDX'.
+# Synonyms for PDX / xenograft tables; one word per line, OR semantics, # = comment.
+# Many PDX tables never say 'PDX' - check real captions with --mode list before trimming.
 
 xenograft
 PDX
-# pbc_28772's gold table caption says '...for all PDX models'; xenograft alone misses it
-
 tumor line
-# pbc_26870 Table 1 is a PDX table whose caption is literally just 'Table 1';
-# the only signal is the 'Tumor Line' column header inside
-
 model
-# pbc_30017 Table 1 says 'osteosarcoma models'.
-# WARNING: broad; filter with the manifest's matched_on column.
-# Keep it if missing tables hurts more than extra ones; comment it out otherwise.
+# broad: pulls in unrelated tables; filter with the manifest's matched_on column

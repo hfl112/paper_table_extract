@@ -1,22 +1,11 @@
-# Synonyms for treatment-response tables.
-#
-# This is USER domain knowledge, not tool built-ins (generality principle).
-# Usage: --keywords-file keywords/response.txt ; one word per line, OR semantics.
+# Synonyms for treatment-response tables; one word per line, OR semantics, # = comment.
+# Matching is whole-word + English inflections (responses/responded match automatically).
 
 response
-# Matching is whole-word + inflections, so responses/responded match too.
-# Measured: content hits matter more than captions (pbc_28772's gold table has
-# no 'response' in the caption but an 'Obj. Response' column header).
-
 relapse
 status
-# blood_2014_12_518900 Table 1 is clinical response data with NO 'response'
-# anywhere; its headers are 'Disease status at biopsy | Length of CR1, mo | ...'.
-# WARNING: 'status' is broad and pulls in unrelated tables.
-
+# broad: pulls in unrelated tables; keep only if missing tables hurts more than extras
 remission
-# Backup synonym; no hits in the current corpus.
 
-# Response codes (PD/CR/PR/SD/MCR) are deliberately absent: not selective enough
-# (PD/SD appear everywhere, SD doubles as standard deviation). Filter downstream
-# on the extracted CSVs instead - counting cells is exact, counting text is not.
+# Response codes (PD/CR/PR/SD/MCR) are deliberately absent: too common in prose and
+# SD doubles as standard deviation. Filter downstream on the extracted CSVs instead.
